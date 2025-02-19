@@ -15,4 +15,4 @@ def send_sms(number, message):
     print("[✅] SMS Sent Successfully!")
 
 # Example Call
-send_sms("+919876543210", "Hello! This is an offline SMS system!")
+send_sms("+919695003501", "Hello! This is an offline SMS system!")
