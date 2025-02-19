@@ -1,18 +1,36 @@
-import serial
-import time
+def send_sms_via_gsm(phone, message):
+    try:
+        ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=5)
+        ser.write(b'AT\r')
+        time.sleep(1)
+        response = ser.read_all().decode()
+        print("AT Response:", response)
+        if "OK" not in response:
+            return False
 
-# GSM Module का Serial Port और Baudrate सेट करें
-gsm = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
-time.sleep(2)
+        ser.write(b'AT+CMGF=1\r')
+        time.sleep(1)
+        response = ser.read_all().decode()
+        print("AT+CMGF=1 Response:", response)
+        if "OK" not in response:
+            return False
 
-def send_sms(number, message):
-    gsm.write(b'AT+CMGF=1\r')  # Text Mode Enable करें
-    time.sleep(1)
-    gsm.write(f'AT+CMGS="{number}"\r'.encode())  # Recipient Number Set करें
-    time.sleep(1)
-    gsm.write(message.encode() + b"\x1A")  # Message Send करें
-    time.sleep(3)
-    print("[✅] SMS Sent Successfully!")
-
-# Example Call
-send_sms("+919695003501", "Hello! This is an offline SMS system!")
+        cmd = f'AT+CMGS="{phone}"\r'
+        ser.write(cmd.encode())
+        time.sleep(1)
+        ser.write(message.encode() + b"\r")
+        time.sleep(1)
+        ser.write(bytes([26]))  # Ctrl+Z to send the message
+        time.sleep(3)
+        response = ser.read_all().decode()
+        ser.close()
+        print("Send SMS Response:", response)
+        if "OK" in response:
+            print("SMS sent successfully")
+            sys.stdout.flush()
+            return True
+        else:
+            return False
+    except Exception as e:
+        print("Error in send_sms_via_gsm:", e)
+        return False
