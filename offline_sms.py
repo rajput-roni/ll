@@ -2,7 +2,7 @@ import serial
 import time
 
 # GSM Module ka Serial Port aur Baud Rate
-SERIAL_PORT = '/dev/ttyUSB0'
+SERIAL_PORT = '/dev/ttyUSB0'  # Yeh aapka GSM module ka port hai
 BAUD_RATE = 115200  # Yeh aapke module ke liye sahi hai
 
 # Serial Connection Setup
