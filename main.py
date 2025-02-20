@@ -7,7 +7,7 @@ from serial import Serial
 
 # GSM Module Configuration
 GSM_PORT = '/dev/ttyUSB0'  # अपने डिवाइस के अनुसार बदलें
-BAUD_RATE = 9600
+BAUD_RATE = 115200
 
 def send_sms_via_gsm(phone_number, message):
     try:
