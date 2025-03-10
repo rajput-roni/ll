@@ -1,0 +1,66 @@
+def send_sms_via_gsm(phone, message):
+    """
+    GSM मॉड्यूल के जरिए SMS भेजने का फंक्शन।
+    
+    हार्डवेयर सेटअप के लिए निम्न निर्देश फॉलो करें:
+    
+    1. पावर कनेक्शन:
+       - GSM मॉड्यूल का VCC पिन: 3.7V-4.2V वाले पावर स्रोत से कनेक्ट करें।
+       - GND पिन: पावर स्रोत और USB-to-TTL कनवर्टर के GND से जोड़ें।
+       
+    2. सीरियल (TX/RX) कनेक्शन:
+       - GSM मॉड्यूल का TX पिन → USB-to-TTL कनवर्टर के RX पिन से।
+       - GSM मॉड्यूल का RX पिन → USB-to-TTL कनवर्टर के TX पिन से।
+         > ध्यान दें: TX और RX को क्रॉस करें।
+       
+    3. USB OTG कनेक्शन:
+       - USB-to-TTL कनवर्टर को OTG केबल के जरिए अपने Android फोन (Termux) से कनेक्ट करें।
+       - Termux में 'termux-usb -l' से यह चेक करें कि डिवाइस दिखाई दे रहा है या नहीं।
+       
+    4. SIM कार्ड और एंटेना:
+       - GSM मॉड्यूल में सक्रिय SIM कार्ड डालें (SMS पैक के साथ)।
+       - एंटेना को कनेक्ट करें ताकि सिग्नल मजबूत रहे।
+       
+    5. पोर्ट और Baud Rate:
+       - इस कोड में डिफ़ॉल्ट पोर्ट '/dev/ttyUSB0' और Baud Rate 115200 सेट हैं।
+       - यदि आपका मॉड्यूल किसी अन्य पोर्ट पर कनेक्ट है या Baud Rate अलग है, तो इसे सही मान से बदलें।
+    """
+    try:
+        # सीरियल कनेक्शन खोलें (सुनिश्चित करें कि पोर्ट और बॉडरेट आपके हार्डवेयर के अनुसार हैं)
+        ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=5)
+        
+        # मॉड्यूल से कनेक्शन की जाँच हेतु AT कमांड भेजें
+        ser.write(b'AT\r')
+        time.sleep(1)
+        
+        # SMS टेक्स्ट मोड में सेट करने के लिए कमांड
+        ser.write(b'AT+CMGF=1\r')
+        time.sleep(1)
+        
+        # SMS भेजने के लिए फोन नंबर सेट करें
+        cmd = f'AT+CMGS="{phone}"\r'
+        ser.write(cmd.encode())
+        time.sleep(1)
+        
+        # संदेश भेजें
+        ser.write(message.encode() + b"\r")
+        time.sleep(1)
+        
+        # CTRL+Z (ASCII 26) भेजें ताकि मॉड्यूल संदेश का अंत समझ जाए
+        ser.write(bytes([26]))
+        time.sleep(3)
+        
+        # मॉड्यूल से रिस्पॉन्स पढ़ें
+        response = ser.read_all().decode()
+        ser.close()
+        
+        if "OK" in response:
+            print("SMS successfully sent via GSM module.")
+            sys.stdout.flush()
+            return True
+        else:
+            print("Failed to send SMS via GSM module. Response:", response)
+            return False
+    except Exception as e:
+        print("Error in send_sms_via_gsm:", e)
+        return False
