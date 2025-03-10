@@ -1,5 +1,3 @@
 pyserial
 requests
 colorama
-pip install pyserial requests colorama
-pip install -r requirements.txt
