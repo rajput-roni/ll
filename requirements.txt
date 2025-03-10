@@ -1,4 +1,3 @@
+pyserial
 requests
-rich
-httpx
-pycurl
+colorama
