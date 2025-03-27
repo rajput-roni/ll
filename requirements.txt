@@ -1,5 +1,8 @@
-pyserial
 requests
 colorama
+pyserial
 pip install -r requirements.txt
 pip install pyserial requests colorama
+requests>=2.25.1
+colorama>=0.4.4
+pyserial>=3.5
