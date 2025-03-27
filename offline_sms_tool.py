@@ -1,8 +1,3 @@
-### 3. offline_sms_tool.py
-
-Create a file named `offline_sms_tool.py` and paste the full script below:
-
-```python
 #!/usr/bin/python3
 #-*-coding:utf-8-*-
 
