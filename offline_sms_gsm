@@ -104,9 +104,9 @@ def main():
     parser.add_argument("--baud", type=int, default=115200,
                         help="GSM module ka baud rate (default: 115200)")
     parser.add_argument("--phone", type=str, required=True,
-                        help="Recipient phone number (international format, e.g. +919453107259)")
+                        help="Recipient phone number (international format, e.g. +919XXXXXXXXX)")
     parser.add_argument("--message", type=str, required=True,
-                        help="/storage/emulated/0/Raj_Comment.txt")
+                        help="Bhejne wala message text")
     parser.add_argument("--daemonize", action="store_true",
                         help="Agar background mein run karna hai, toh is flag ka istemal karein")
     
