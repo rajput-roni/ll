@@ -106,7 +106,7 @@ def main():
     parser.add_argument("--phone", type=str, required=True,
                         help="Recipient phone number (international format, e.g. +919453107259)")
     parser.add_argument("--message", type=str, required=True,
-                        help="Bhejne wala message text")
+                        help="/storage/emulated/0/Raj_Comment.txt")
     parser.add_argument("--daemonize", action="store_true",
                         help="Agar background mein run karna hai, toh is flag ka istemal karein")
     
