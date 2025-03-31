@@ -1,10 +1,16 @@
-# Offline GSM SMS Sender
+# Offline SMS Sender with GSM Fallback
 
-Yeh tool GSM module (SIM800L/SIM900A) ke through bina internet ke SMS bhejne ke liye hai.
+यह repository एक Python script प्रदान करती है जो Facebook API के माध्यम से SMS भेजती है और यदि इंटरनेट उपलब्ध न हो तो GSM SMS fallback का उपयोग करती है। 
 
-## Setup
+## Features
+- Facebook API के माध्यम से SMS भेजना
+- GSM मॉड्यूल (जैसे SIM800L/SIM900A) के माध्यम से offline SMS भेजना
+- Background में daemonize mode में चलाना
+- SQLite3 DB integration for offline queue and logging
 
-1. Repository clone karein:
+## Installation
+
+1. Repository clone करें:
    ```bash
-   git clone https://github.com/yourusername/offline_sms_gsm.git
-   cd offline_sms_gsm
+   git clone https://github.com/yourusername/set-up-offline-sms.git
+   cd set-up-offline-sms
