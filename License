@@ -1,0 +1,12 @@
+
+---
+
+इन सभी फाइलों को बनाकर अपने repository में रखें। अब आप निम्न commands का उपयोग करके repository को GitHub पर push कर सकते हैं:
+
+```bash
+git init
+git add .
+git commit -m "Initial commit with offline SMS sender script"
+git branch -M main
+git remote add origin https://github.com/yourusername/set-up-offline-sms.git
+git push -u origin main
